@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <limits>
 #include <xxhash.h>
@@ -127,13 +128,18 @@ void TextureCache::ProcessDownloadImages() {
     if (download_images.empty()) {
         return;
     }
-    // Record every copy first, then stall the GPU once for the whole batch. DownloadImageMemory in
-    // sync mode calls scheduler.Finish() per image, which turns this into one full pipeline flush
-    // per render target per submit. That is the reason enabling readback_linear_images destroys the
-    // frame rate on titles that use a dozen full resolution render targets.
+    // Record every copy first, then stall the GPU once for the whole batch. This is called at
+    // guest-visible fences only; Rasterizer::OnSubmit must not drain the queue because it runs for
+    // every guest PM4 submission and would serialize the pipeline repeatedly within one frame.
+    const bool trace = GammaTraceEnabled();
+    const auto started = trace ? std::chrono::steady_clock::now()
+                               : std::chrono::steady_clock::time_point{};
+    const size_t queued_count = download_images.size();
+    u64 queued_bytes = 0;
     SmallVector<std::function<void()>, 16> writebacks;
-    writebacks.reserve(download_images.size());
+    writebacks.reserve(queued_count);
     for (const ImageId image_id : download_images) {
+        queued_bytes += slot_images[image_id].info.guest_size;
         std::function<void()> writeback;
         DownloadImageMemory(image_id, DownloadMemoryFlags::Sync, &writeback);
         if (writeback) {
@@ -145,6 +151,12 @@ void TextureCache::ProcessDownloadImages() {
         for (auto& writeback : writebacks) {
             writeback();
         }
+    }
+    if (trace) {
+        const auto elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started);
+        LOG_INFO(Render_Vulkan, "divaps4 readback batch: images={} bytes={:#x} elapsed={:.2f} ms",
+                 queued_count, queued_bytes, elapsed.count());
     }
     download_images.clear();
 }

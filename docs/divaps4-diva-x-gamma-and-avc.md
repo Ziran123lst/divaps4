@@ -117,8 +117,8 @@ format = Vulkan::LiverpoolToVK::SurfaceFormat(dfmt, nfmt);   // 跟随 T# 的 nf
 1. **PR #3420 的死代码**：`converted` 算完被丢弃，`ApplyForceDegamma` 作用在原始 texel 上。
    `NumberConversion::None` 时两者等价，所以一直没暴露；`SrgbToNorm` / `UnormToUbnorm` 会
    静默丢失转换。同时给整数/深度格式加了跳过（它们没有 gamma 语义，不该走 `pow`）。
-2. **回读的同步粒度**：改为"先记录全部拷贝 → 只 flush 一次 → 统一做 host 回写"。
-   即使以后别的游戏仍需要 `readback_linear_images`，也不会再出现每 RT 一次管线停顿。
+2. **回读的同步粒度**：同一次 drain 中改为"先记录全部拷贝 → 只 flush 一次 → 统一做 host 回写"。
+   但这里还存在按 guest PM4 提交触发 drain 的频率问题（见后续性能更新），单纯批处理并不足以消除掉帧。
 
 ---
 
@@ -157,7 +157,8 @@ if (sampler.force_degamma && image.GetNumberFmt() != AmdGpu::NumberFormat::Srgb 
 | `image.h` | 新增 `bool srgb_encoded`，语义是"当前内容的编码方式"，不是"读者的期望" |
 | `image.cpp` | 构造时 `srgb_encoded = IsSrgbFormat(info.pixel_format)` |
 | `texture_cache.cpp` | `FindRenderTarget()` 用 CB 格式刷新 `srgb_encoded`；`FindTexture()` 对采样 view 做单向钳制 |
-| `texture_cache.h/.cpp` | `DownloadImageMemory()` 增加可选的延迟回写出参；`ProcessDownloadImages()` 批量化停顿 |
+| `texture_cache.h/.cpp` | `DownloadImageMemory()` 增加可选的延迟回写出参；`ProcessDownloadImages()` 同批次只停顿一次，并可用 trace 输出图片数/字节数/耗时 |
+| `renderer_vulkan/vk_rasterizer.cpp` | 不再在每个 guest PM4 submit 后同步排空回读队列；改在 guest-visible fence 之前排空，合并多个 submit 的重复回读 |
 
 关键代码（`FindTexture`）：
 
@@ -189,10 +190,10 @@ return image.FindView(view_info);
 ## 五、验证步骤
 
 1. **构建**：与上游一致（CMake + Vulkan SDK + FFmpeg），产物为 `divaps4.exe`。
-2. **亮度**：确认 `readbackLinearImages` 为 **false**（默认），依次检查主标题 → 游戏内菜单 →
-   PV → 多首不同歌曲。修复后四处应一致，不再需要 Ctrl+F10。
-3. **回归**：`readbackLinearImages = true` 时画面应与 false 完全一致（钳制已让它对该问题不再
-   起作用），且帧率不再断崖——批量化后每帧只有一次管线 flush。
+2. **亮度**：先确认 `readbackLinearImages = true` 时主标题、菜单和 PV 亮度正常；若 `false` 仍暗，
+   在 `[GPU]` 设置中保持开启，等待按需回读修复通过实测。
+3. **回归**：回读现在只在 guest-visible fence 处处理，不再在每次 PM4 提交时处理；通过
+   `DIVAPS4_TRACE_GAMMA=1` 可在日志查看格式钳制是否命中及每批回读图像数、字节量和耗时。
 4. **AVC**：播放含 PV 的曲目，重点验证有分辨率切换或 10bit 的流；日志里若出现
    `CopyNV12Data: frame ... needs ... but the frame buffer only has ...`，说明流确实超出了
    guest 声明的缓冲，应改为在 `sceVdecCoreQueryFrameBufferInfo` 侧按实际分辨率上报。

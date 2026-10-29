@@ -398,7 +398,11 @@ void Rasterizer::Finish() {
 
 void Rasterizer::OnSubmit() {
     buffer_cache.TickFrame();
-    texture_cache.ProcessDownloadImages();
+    // readback_linear_images writes GPU render targets back to guest memory. Do not force this at
+    // every command-buffer submission: Liverpool::OnSubmit is reached for every guest PM4 submit,
+    // not once per presented frame, and a synchronous readback here serializes the GPU each time.
+    // Pending downloads are instead drained by OnFence, immediately before the guest-visible fence
+    // is signalled; accesses without a fence are handled by normal texture-cache invalidation/GC.
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
 }
