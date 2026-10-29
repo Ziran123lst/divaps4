@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
 #include <limits>
 #include <xxhash.h>
 
@@ -9,6 +10,7 @@
 #include "common/debug.h"
 #include "common/div_ceil.h"
 #include "common/hash.h"
+#include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "core/memory.h"
 #include "video_core/buffer_cache/buffer_cache.h"
@@ -22,6 +24,33 @@
 #include "video_core/texture_cache/tile_manager.h"
 
 namespace VideoCore {
+
+namespace {
+
+/// DIVAPS4_TRACE_GAMMA=1 dumps every distinct (guest view format, image format) pair the texture
+/// cache sees, once each. Off by default; when off the cost is a single getenv at startup.
+bool GammaTraceEnabled() {
+    static const bool enabled = std::getenv("DIVAPS4_TRACE_GAMMA") != nullptr;
+    return enabled;
+}
+
+template <typename F>
+void TraceOnce(u64 key, F&& emit) {
+    if (!GammaTraceEnabled()) {
+        return;
+    }
+    static std::mutex trace_mutex;
+    static absl::flat_hash_set<u64> seen;
+    {
+        std::scoped_lock lock{trace_mutex};
+        if (!seen.insert(key).second) {
+            return;
+        }
+    }
+    emit();
+}
+
+} // namespace
 
 static constexpr u32 MAX_IMAGES = std::numeric_limits<u16>::max();
 static constexpr u32 MAX_IMAGE_VIEWS = std::numeric_limits<u16>::max();
@@ -752,9 +781,19 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc) {
     // written gamma encoded. The reverse direction is left alone because the guest may ask for the
     // raw bytes and do the decode itself (sampler force_degamma, see ApplyForceDegamma).
     ImageViewInfo view_info = desc.view_info;
+    bool clamped = false;
     if (IsSrgbFormat(view_info.format) && !image.srgb_encoded) {
         view_info.format = ToggleSrgb(view_info.format, false);
+        clamped = true;
     }
+    TraceOnce((u64(desc.view_info.format) << 32) ^ (u64(image.info.pixel_format) << 8) ^
+                  (image.srgb_encoded ? 1u : 0u) ^ (clamped ? 2u : 0u),
+              [&] {
+                  LOG_INFO(Render_Vulkan,
+                           "divaps4 trace sample: guest={} image={} srgb_encoded={} clamped={}",
+                           vk::to_string(desc.view_info.format),
+                           vk::to_string(image.info.pixel_format), image.srgb_encoded, clamped);
+              });
     return image.FindView(view_info);
 }
 
@@ -790,6 +829,13 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     // attachment encodes on write, a linear one stores the shader output as is. Readers are
     // clamped to this in FindTexture instead of re-deriving it from their own descriptor.
     image.srgb_encoded = IsSrgbFormat(desc.info.pixel_format);
+    TraceOnce((u64(desc.info.pixel_format) << 16) ^ u64(desc.info.num_bits),
+              [&] {
+                  LOG_INFO(Render_Vulkan,
+                           "divaps4 trace target: format={} bits={} srgb_encoded={} tiled={}",
+                           vk::to_string(desc.info.pixel_format), desc.info.num_bits,
+                           image.srgb_encoded, image.info.props.is_tiled);
+              });
     if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8)) {
         std::unique_lock lk{download_images_mutex};
         download_images.emplace(image_id);
