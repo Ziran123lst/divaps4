@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2024 shadPS4 Emulator Project
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-name: Build and Release
+name: Build divaps4 (Qt)
 
 on:
   push:
@@ -145,18 +145,32 @@ jobs:
         run: ctest --test-dir build --output-on-failure --progress -E 'GcnTest'
         shell: bash
 
-  windows-sdl:
-    runs-on: windows-2025-vs2026
+  windows-qt:
+    runs-on: windows-2025
     needs: get-info
+    env:
+      QT_LAUNCHER_REPO: shadps4-emu/shadps4-qtlauncher
+      QT_LAUNCHER_REF: 811fb0319cea2e76f1fb8f89d22d67efdf45761a
     steps:
-    - uses: actions/checkout@v6
+    - name: Checkout divaps4
+      uses: actions/checkout@v6
       with:
         submodules: recursive
+
+    - name: Setup Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: 6.10.0
+        host: windows
+        target: desktop
+        arch: win64_msvc2022_64
+        archives: qtbase qttools
+        modules: qtmultimedia
 
     - name: Cache CMake Configuration
       uses: actions/cache@v5
       env:
-          cache-name: ${{ runner.os }}-sdl-ninja-cache-cmake-configuration
+          cache-name: ${{ runner.os }}-qt-ninja-cache-cmake-configuration
       with:
           path: |
             ${{github.workspace}}/build
@@ -167,26 +181,56 @@ jobs:
     - name: Cache CMake Build
       uses: hendrikmuhs/ccache-action@v1.2.21
       env:
-          cache-name: ${{ runner.os }}-sdl-cache-cmake-build
+          cache-name: ${{ runner.os }}-qt-cache-cmake-build
       with:
         append-timestamp: false
         key: ${{ env.cache-name }}-${{ hashFiles('**/CMakeLists.txt', 'cmake/**') }}
 
-    - name: Print CPU Info
-      run: bash -c "cat /proc/cpuinfo"
-
-    - name: Configure CMake
+    - name: Configure divaps4
       run: cmake --fresh -G Ninja -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE=ON -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-    - name: Build
+    - name: Build divaps4
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS
 
-    - name: Upload Windows SDL artifact
+    - name: Checkout the Qt launcher
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ env.QT_LAUNCHER_REPO }}
+        ref: ${{ env.QT_LAUNCHER_REF }}
+        path: qtlauncher
+        submodules: recursive
+
+    - name: Point the launcher at divaps4.exe
+      shell: bash
+      run: |
+        set -e
+        file=qtlauncher/src/qt_gui/gui_settings.cpp
+        grep -q 'exeName = "shadPS4.exe";' "$file"
+        sed -i 's/exeName = "shadPS4.exe";/exeName = "divaps4.exe";/' "$file"
+        grep -q 'exeName = "divaps4.exe";' "$file"
+
+    - name: Configure Qt launcher
+      run: cmake --fresh -G Ninja -B ${{github.workspace}}/qtlauncher/build -S ${{github.workspace}}/qtlauncher -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DENABLE_UPDATER=OFF -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl
+
+    - name: Build Qt launcher
+      run: cmake --build ${{github.workspace}}/qtlauncher/build --config ${{env.BUILD_TYPE}} --parallel $env:NUMBER_OF_PROCESSORS
+
+    - name: Package
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force upload | Out-Null
+        New-Item -ItemType Directory -Force upload/qtplugins | Out-Null
+        Copy-Item build/divaps4.exe upload/
+        Copy-Item qtlauncher/build/shadPS4QtLauncher.exe upload/
+        Copy-Item qtlauncher/dist/qt.conf upload/
+        windeployqt --plugindir upload/qtplugins --no-compiler-runtime --no-system-d3d-compiler --no-system-dxc-compiler --dir upload upload/shadPS4QtLauncher.exe
+        Compress-Archive -Path upload/* -DestinationPath divaps4-win64-qt-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}.zip
+
+    - name: Upload Windows Qt artifact
       uses: actions/upload-artifact@v7
       with:
-        name: shadps4-win64-sdl-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}
-        path: ${{github.workspace}}/build/shadPS4.exe
-
+        name: divaps4-win64-qt-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}
+        path: divaps4-win64-qt-${{ needs.get-info.outputs.date }}-${{ needs.get-info.outputs.shorthash }}.zip
   macos-sdl:
     runs-on: macos-26
     needs: get-info
@@ -352,7 +396,7 @@ jobs:
 
   pre-release:
     if: github.ref == 'refs/heads/main' && github.repository == 'shadps4-emu/shadPS4' && github.event_name == 'push'
-    needs: [get-info, windows-sdl, macos-sdl, linux-sdl]
+    needs: [get-info, windows-qt, macos-sdl, linux-sdl]
     runs-on: ubuntu-latest
     steps:
     - name: Download all artifacts
