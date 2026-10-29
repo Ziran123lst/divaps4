@@ -32,7 +32,7 @@ namespace {
 /// (guest view format, image format) pair the texture cache sees, once each. Off by default; the
 /// flag is read once because it is only meant to be changed in config.toml before starting.
 bool GammaTraceEnabled() {
-    static const bool enabled = EmulatorSettings.IsTraceGammaFormatsEnabled();
+    static const bool enabled = EmulatorSettings.IsTraceGammaFormats();
     return enabled;
 }
 
