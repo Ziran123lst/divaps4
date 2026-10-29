@@ -846,7 +846,7 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
                   LOG_INFO(Render_Vulkan,
                            "divaps4 trace target: format={} bits={} srgb_encoded={} tiled={}",
                            vk::to_string(desc.info.pixel_format), desc.info.num_bits,
-                           image.srgb_encoded, image.info.props.is_tiled);
+                           image.srgb_encoded, bool(image.info.props.is_tiled));
               });
     if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8)) {
         std::unique_lock lk{download_images_mutex};
