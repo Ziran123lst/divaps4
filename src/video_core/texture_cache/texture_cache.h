@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -353,8 +354,11 @@ private:
     }
 
     /// Copies image memory back to CPU.
-    void DownloadImageMemory(ImageId image_id,
-                             DownloadMemoryFlags flags = DownloadMemoryFlags::None);
+    /// When \a deferred_writeback is non null the GPU stall and the host writeback are not
+    /// performed; the writeback closure is handed back so the caller can flush once for a whole
+    /// batch of images instead of stalling the pipeline per image.
+    void DownloadImageMemory(ImageId image_id, DownloadMemoryFlags flags = DownloadMemoryFlags::None,
+                             std::function<void()>* deferred_writeback = nullptr);
 
     /// Register image in the page table
     void RegisterImage(ImageId image);

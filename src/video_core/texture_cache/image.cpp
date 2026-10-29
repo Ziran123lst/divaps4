@@ -137,6 +137,11 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
         return;
     }
 
+    // The image format is chosen from the descriptor that created the image (render target format
+    // or the first binding that allocated it), so it also tells us how the contents are encoded.
+    // Sampling and rendering views are clamped to this afterwards, see TextureCache::FindTexture.
+    srgb_encoded = IsSrgbFormat(info.pixel_format);
+
     image_uid = global_image_uid.Next();
     vk::ImageCreateFlags flags{vk::ImageCreateFlagBits::eMutableFormat |
                                vk::ImageCreateFlagBits::eExtendedUsage};

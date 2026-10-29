@@ -217,4 +217,79 @@ bool IsVulkanFormatCompatible(vk::Format base, vk::Format view) {
     return (base_comp & view_comp) == view_comp;
 }
 
+bool IsSrgbFormat(vk::Format format) {
+    switch (format) {
+    case vk::Format::eR8Srgb:
+    case vk::Format::eR8G8Srgb:
+    case vk::Format::eR8G8B8Srgb:
+    case vk::Format::eR8G8B8A8Srgb:
+    case vk::Format::eB8G8R8Srgb:
+    case vk::Format::eB8G8R8A8Srgb:
+    case vk::Format::eA8B8G8R8SrgbPack32:
+    case vk::Format::eBc1RgbSrgbBlock:
+    case vk::Format::eBc1RgbaSrgbBlock:
+    case vk::Format::eBc2SrgbBlock:
+    case vk::Format::eBc3SrgbBlock:
+    case vk::Format::eBc7SrgbBlock:
+        return true;
+    default:
+        return false;
+    }
+}
+
+vk::Format ToggleSrgb(vk::Format format, bool srgb) {
+    if (IsSrgbFormat(format) == srgb) {
+        return format;
+    }
+    switch (format) {
+    case vk::Format::eR8Unorm:
+        return vk::Format::eR8Srgb;
+    case vk::Format::eR8Srgb:
+        return vk::Format::eR8Unorm;
+    case vk::Format::eR8G8Unorm:
+        return vk::Format::eR8G8Srgb;
+    case vk::Format::eR8G8Srgb:
+        return vk::Format::eR8G8Unorm;
+    case vk::Format::eR8G8B8Unorm:
+        return vk::Format::eR8G8B8Srgb;
+    case vk::Format::eR8G8B8Srgb:
+        return vk::Format::eR8G8B8Unorm;
+    case vk::Format::eR8G8B8A8Unorm:
+        return vk::Format::eR8G8B8A8Srgb;
+    case vk::Format::eR8G8B8A8Srgb:
+        return vk::Format::eR8G8B8A8Unorm;
+    case vk::Format::eB8G8R8Unorm:
+        return vk::Format::eB8G8R8Srgb;
+    case vk::Format::eB8G8R8Srgb:
+        return vk::Format::eB8G8R8Unorm;
+    case vk::Format::eB8G8R8A8Unorm:
+        return vk::Format::eB8G8R8A8Srgb;
+    case vk::Format::eB8G8R8A8Srgb:
+        return vk::Format::eB8G8R8A8Unorm;
+    case vk::Format::eBc1RgbUnormBlock:
+        return vk::Format::eBc1RgbSrgbBlock;
+    case vk::Format::eBc1RgbSrgbBlock:
+        return vk::Format::eBc1RgbUnormBlock;
+    case vk::Format::eBc1RgbaUnormBlock:
+        return vk::Format::eBc1RgbaSrgbBlock;
+    case vk::Format::eBc1RgbaSrgbBlock:
+        return vk::Format::eBc1RgbaUnormBlock;
+    case vk::Format::eBc2UnormBlock:
+        return vk::Format::eBc2SrgbBlock;
+    case vk::Format::eBc2SrgbBlock:
+        return vk::Format::eBc2UnormBlock;
+    case vk::Format::eBc3UnormBlock:
+        return vk::Format::eBc3SrgbBlock;
+    case vk::Format::eBc3SrgbBlock:
+        return vk::Format::eBc3UnormBlock;
+    case vk::Format::eBc7UnormBlock:
+        return vk::Format::eBc7SrgbBlock;
+    case vk::Format::eBc7SrgbBlock:
+        return vk::Format::eBc7UnormBlock;
+    default:
+        // No sRGB counterpart exists (float / integer / depth / BC4 / BC5 / BC6 / packed HDR).
+        return format;
+    }
+}
+
 } // namespace VideoCore

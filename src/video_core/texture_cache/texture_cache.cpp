@@ -95,13 +95,33 @@ TextureCache::~TextureCache() = default;
 
 void TextureCache::ProcessDownloadImages() {
     std::unique_lock lk{download_images_mutex};
+    if (download_images.empty()) {
+        return;
+    }
+    // Record every copy first, then stall the GPU once for the whole batch. DownloadImageMemory in
+    // sync mode calls scheduler.Finish() per image, which turns this into one full pipeline flush
+    // per render target per submit. That is the reason enabling readback_linear_images destroys the
+    // frame rate on titles that use a dozen full resolution render targets.
+    SmallVector<std::function<void()>, 16> writebacks;
+    writebacks.reserve(download_images.size());
     for (const ImageId image_id : download_images) {
-        DownloadImageMemory(image_id, DownloadMemoryFlags::Sync);
+        std::function<void()> writeback;
+        DownloadImageMemory(image_id, DownloadMemoryFlags::Sync, &writeback);
+        if (writeback) {
+            writebacks.emplace_back(std::move(writeback));
+        }
+    }
+    if (!writebacks.empty()) {
+        scheduler.Finish();
+        for (auto& writeback : writebacks) {
+            writeback();
+        }
     }
     download_images.clear();
 }
 
-void TextureCache::DownloadImageMemory(ImageId image_id, DownloadMemoryFlags flags) {
+void TextureCache::DownloadImageMemory(ImageId image_id, DownloadMemoryFlags flags,
+                                       std::function<void()>* deferred_writeback) {
     Image& image = slot_images[image_id];
     if (False(image.flags & ImageFlagBits::GpuModified)) {
         return;
@@ -159,6 +179,11 @@ void TextureCache::DownloadImageMemory(ImageId image_id, DownloadMemoryFlags fla
             runtime.GetStagingPool().FreeDeferred(download);
         }
     };
+
+    if (deferred_writeback) {
+        *deferred_writeback = write_data;
+        return;
+    }
 
     if (is_priority) {
         scheduler.DeferPriorityOperation(std::move(write_data));
@@ -715,7 +740,22 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc) {
         }
     }
     UpdateImage(image_id);
-    return image.FindView(desc.view_info);
+
+    // Vulkan lets an sRGB format alias its linear counterpart (they share a compatibility class),
+    // so a guest descriptor asking for "sRGB" can be served by a view over an image whose contents
+    // were written linearly. The sampler would then apply a gamma decode to already linear data,
+    // which crushes shadows while leaving highlights almost untouched and can not be compensated
+    // by an output gamma curve. Whether that happens used to depend on which binding allocated the
+    // image first, so the same scene could look different across passes and across songs.
+    //
+    // Clamp the view to the encoding the contents actually have: never decode unless the image was
+    // written gamma encoded. The reverse direction is left alone because the guest may ask for the
+    // raw bytes and do the decode itself (sampler force_degamma, see ApplyForceDegamma).
+    ImageViewInfo view_info = desc.view_info;
+    if (IsSrgbFormat(view_info.format) && !image.srgb_encoded) {
+        view_info.format = ToggleSrgb(view_info.format, false);
+    }
+    return image.FindView(view_info);
 }
 
 void TextureCache::RegisterMeta(VAddr address, MetaDataInfo info) {
@@ -746,6 +786,10 @@ void TextureCache::UnregisterMeta(VAddr address, u64 owner_uid) {
 ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& desc) {
     Image& image = slot_images[image_id];
     image.flags |= ImageFlagBits::GpuModified;
+    // The color buffer descriptor decides how the contents are encoded from now on: an sRGB
+    // attachment encodes on write, a linear one stores the shader output as is. Readers are
+    // clamped to this in FindTexture instead of re-deriving it from their own descriptor.
+    image.srgb_encoded = IsSrgbFormat(desc.info.pixel_format);
     if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8)) {
         std::unique_lock lk{download_images_mutex};
         download_images.emplace(image_id);

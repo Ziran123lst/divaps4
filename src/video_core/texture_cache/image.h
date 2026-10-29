@@ -152,6 +152,10 @@ public:
 
     vk::ImageUsageFlags usage_flags;
     vk::FormatFeatureFlags2 format_features;
+    /// True when the bytes currently held by this image are gamma encoded (i.e. they were produced
+    /// by an sRGB attachment write or uploaded for an sRGB declared resource). This describes the
+    /// *content*, not the reader, and is what decides whether a sample must be gamma decoded.
+    bool srgb_encoded = false;
     struct State {
         vk::PipelineStageFlags2 pl_stage = vk::PipelineStageFlagBits2::eAllCommands;
         vk::AccessFlags2 access_mask = vk::AccessFlagBits2::eNone;
