@@ -255,18 +255,39 @@ static void DecoderWorkerLoop(std::stop_token stop_token, VdecCoreDecoder* dec) 
 }
 
 static AVFrame* ConvertNV12Frame(VdecCoreDecoder* dec, AVFrame& frame) {
+    if (frame.width <= 0 || frame.height <= 0 || frame.format == AV_PIX_FMT_NONE ||
+        !frame.data[0]) {
+        LOG_ERROR(Lib_Videodec, "VdecCore: cannot convert frame w={}, h={}, fmt={}", frame.width,
+                  frame.height, frame.format);
+        return nullptr;
+    }
     AVFrame* nv12_frame = av_frame_alloc();
+    if (!nv12_frame) {
+        return nullptr;
+    }
     nv12_frame->format = AV_PIX_FMT_NV12;
     nv12_frame->width = frame.width;
     nv12_frame->height = frame.height;
     nv12_frame->pts = frame.pts;
     nv12_frame->pkt_dts = frame.pkt_dts;
     nv12_frame->opaque = frame.opaque;
-    av_frame_get_buffer(nv12_frame, 0);
+    if (av_frame_get_buffer(nv12_frame, 0) < 0 || !nv12_frame->data[0] || !nv12_frame->data[1]) {
+        LOG_ERROR(Lib_Videodec, "VdecCore: failed to allocate NV12 frame {}x{}", frame.width,
+                  frame.height);
+        av_frame_free(&nv12_frame);
+        return nullptr;
+    }
 
     dec->sws_context = sws_getCachedContext(
         dec->sws_context, frame.width, frame.height, static_cast<AVPixelFormat>(frame.format),
         frame.width, frame.height, AV_PIX_FMT_NV12, SWS_BILINEAR, nullptr, nullptr, nullptr);
+    // sws_getCachedContext returns null for unsupported source formats (for example a 10 bit AVC
+    // stream on a build without the matching pixel format). Passing that to sws_scale crashed.
+    if (!dec->sws_context) {
+        LOG_ERROR(Lib_Videodec, "VdecCore: no scaler for pixel format {}", frame.format);
+        av_frame_free(&nv12_frame);
+        return nullptr;
+    }
     sws_scale(dec->sws_context, frame.data, frame.linesize, 0, frame.height, nv12_frame->data,
               nv12_frame->linesize);
     return nv12_frame;
@@ -375,10 +396,21 @@ static s32 PS4_SYSV_ABI sceVdecCoreCreateDecoder(const OrbisVdecCoreConfigInfo* 
     LOG_INFO(Lib_Videodec, "VdecCore: creating decoder codec_type={}, ffmpeg_codec_id={}",
              codec_type, static_cast<int>(codec_id));
     const AVCodec* codec = avcodec_find_decoder(codec_id);
-    ASSERT(codec);
+    // ASSERT compiles out in release builds, and avcodec_alloc_context3(nullptr) hands back a
+    // context with no codec which then faults inside avcodec_open2.
+    if (!codec) {
+        LOG_ERROR(Lib_Videodec, "VdecCore: no decoder available for codec id {}",
+                  static_cast<int>(codec_id));
+        delete dec;
+        return ORBIS_VDEC_CORE_ERROR_INVALID_CODEC_TYPE;
+    }
 
     dec->codec_context = avcodec_alloc_context3(codec);
-    ASSERT(dec->codec_context);
+    if (!dec->codec_context) {
+        LOG_ERROR(Lib_Videodec, "VdecCore: avcodec_alloc_context3 failed");
+        delete dec;
+        return ORBIS_VDEC_CORE_ERROR_FATAL;
+    }
     dec->codec_context->width = dec->max_width;
     dec->codec_context->height = dec->max_height;
     dec->codec_context->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
@@ -386,6 +418,9 @@ static s32 PS4_SYSV_ABI sceVdecCoreCreateDecoder(const OrbisVdecCoreConfigInfo* 
     int ret = avcodec_open2(dec->codec_context, codec, nullptr);
     if (ret < 0) {
         LOG_ERROR(Lib_Videodec, "VdecCore: avcodec_open2 failed: {}", ret);
+        avcodec_free_context(&dec->codec_context);
+        delete dec;
+        return ORBIS_VDEC_CORE_ERROR_FATAL;
     }
 
     dec->decoded_frame = av_frame_alloc();
@@ -550,6 +585,16 @@ static s32 PS4_SYSV_ABI sceVdecCoreGetDecodeOutput(VdecCoreDecoder* decoder,
         AVFrame* converted = ConvertNV12Frame(decoder, *frame);
         av_frame_free(&frame);
         frame = converted;
+        if (!frame) {
+            LOG_ERROR(Lib_Videodec, "VdecCore: dropping frame, colour conversion failed");
+            output_info->picture_count = 0;
+            output_info->frame_buffer = nullptr;
+            output_info->pictures[0].frame_buffer = nullptr;
+            output_info->pictures[1].frame_buffer = nullptr;
+            output_info->luma_buffer = nullptr;
+            output_info->chroma_buffer = nullptr;
+            return ORBIS_VDEC_CORE_ERROR_FATAL;
+        }
     }
 
     const u32 width = frame->width;
@@ -565,11 +610,14 @@ static s32 PS4_SYSV_ABI sceVdecCoreGetDecodeOutput(VdecCoreDecoder* decoder,
                                       : decoder->frame_buffer_size;
 
     void* dest_buf = nullptr;
+    u64 dest_capacity = 0;
     if (frame_buf && frame_buf->frame_buffer) {
         dest_buf = frame_buf->frame_buffer;
+        dest_capacity = frame_buf->frame_buffer_size;
     } else if (!decoder->frame_buffer_slots.empty()) {
         dest_buf = decoder->frame_buffer_slots[decoder->current_slot_index %
                                                decoder->frame_buffer_slots.size()];
+        dest_capacity = decoder->frame_buffer_size;
         decoder->current_slot_index++;
     } else {
         const u64 fallback_size = std::max<u64>(fb_size, allocated_fb_size);
@@ -577,13 +625,34 @@ static s32 PS4_SYSV_ABI sceVdecCoreGetDecodeOutput(VdecCoreDecoder* decoder,
             decoder->fallback_frame_buffer.resize(fallback_size);
         }
         dest_buf = decoder->fallback_frame_buffer.data();
+        dest_capacity = decoder->fallback_frame_buffer.size();
+    }
+    if (dest_capacity == 0) {
+        dest_capacity = allocated_fb_size;
     }
 
-    Videodec::CopyNV12Data(static_cast<u8*>(dest_buf), fb_size, *frame);
+    // The capacity has to be the real size of the destination, not a value derived from the frame.
+    // Passing fb_size here made the bounds check inside the copy a tautology, so an AVC stream that
+    // decoded to a larger resolution than the decoder was configured for wrote past the end of the
+    // guest frame buffer and took the emulator down.
+    if (!Videodec::CopyNV12Data(static_cast<u8*>(dest_buf), dest_capacity, *frame)) {
+        LOG_ERROR(Lib_Videodec, "VdecCore: dropping {}x{} frame, does not fit the frame buffer",
+                  width, height);
+        av_frame_free(&frame);
+        output_info->picture_count = 0;
+        output_info->frame_buffer = nullptr;
+        output_info->pictures[0].frame_buffer = nullptr;
+        output_info->pictures[1].frame_buffer = nullptr;
+        output_info->luma_buffer = nullptr;
+        output_info->chroma_buffer = nullptr;
+        return ORBIS_VDEC_CORE_ERROR_FATAL;
+    }
 
-    if (allocated_fb_size >= sizeof(SceVdecCoreHwPictureInfo)) {
+    // Reserve the metadata area only when it fits after the picture, otherwise the header would be
+    // written on top of the last rows of the frame.
+    if (dest_capacity >= fb_size + sizeof(SceVdecCoreHwPictureInfo)) {
         auto* meta = reinterpret_cast<SceVdecCoreHwPictureInfo*>(
-            static_cast<u8*>(dest_buf) + allocated_fb_size - sizeof(SceVdecCoreHwPictureInfo));
+            static_cast<u8*>(dest_buf) + dest_capacity - sizeof(SceVdecCoreHwPictureInfo));
         std::memset(meta, 0, sizeof(*meta));
         meta->codec_type = (decoder->codec_id == AV_CODEC_ID_HEVC) ? 1 : 0;
         meta->user_data = reinterpret_cast<u64>(frame->opaque);

@@ -9,6 +9,8 @@ struct AVFrame;
 
 namespace Libraries::Videodec {
 
-void CopyNV12Data(u8* dst, u64 max_size, const AVFrame& src);
+/// Copies an NV12 frame into a guest frame buffer of \a max_size bytes. Returns false when the
+/// frame is malformed or does not fit, in which case nothing is written.
+bool CopyNV12Data(u8* dst, u64 max_size, const AVFrame& src);
 
 }
