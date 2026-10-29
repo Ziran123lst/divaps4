@@ -17,7 +17,7 @@ if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-project(shadPS4 CXX C ASM ${ADDITIONAL_LANGUAGES})
+project(divaps4 CXX C ASM ${ADDITIONAL_LANGUAGES})
 
 include(FetchContent)
 
@@ -1342,6 +1342,10 @@ add_executable(shadps4
 )
 
 create_target_directory_groups(shadps4)
+
+# divaps4: keep the upstream target name so every existing reference keeps working, but ship the
+# binary under the fork's name.
+set_target_properties(shadps4 PROPERTIES OUTPUT_NAME "divaps4")
 
 target_link_libraries(shadps4 PRIVATE spdlog::spdlog)
 target_link_libraries(shadps4 PRIVATE magic_enum::magic_enum fmt::fmt toml11::toml11 tsl::robin_map xbyak::xbyak Tracy::TracyClient RenderDoc::API FFmpeg::ffmpeg Dear_ImGui ImGuiFileDialog gcn half::half ZLIB::ZLIB PNG::PNG minimp3 dr_flac)
