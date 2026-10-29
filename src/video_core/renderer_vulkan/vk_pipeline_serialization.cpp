@@ -12,7 +12,10 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 11u;
+/* Bumped to 12 by divaps4: the force_degamma path in resource_patching_pass.cpp now emits a
+   different binary for the same guest shader, so caches written by upstream builds would keep
+   serving shaders without the gamma fix. */
+static constexpr u32 ShaderBinaryVersion = 12u;
 static constexpr u32 ShaderMetaVersion = 6u;
 static constexpr u32 PipelineKeyVersion = 3u;
 } // namespace Serialization
