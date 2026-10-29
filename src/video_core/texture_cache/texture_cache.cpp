@@ -28,10 +28,11 @@ namespace VideoCore {
 
 namespace {
 
-/// DIVAPS4_TRACE_GAMMA=1 dumps every distinct (guest view format, image format) pair the texture
-/// cache sees, once each. Off by default; when off the cost is a single getenv at startup.
+/// DIVAPS4_TRACE_GAMMA (config: [GPU] traceGammaFormats = true) dumps every distinct
+/// (guest view format, image format) pair the texture cache sees, once each. Off by default; the
+/// flag is read once because it is only meant to be changed in config.toml before starting.
 bool GammaTraceEnabled() {
-    static const bool enabled = std::getenv("DIVAPS4_TRACE_GAMMA") != nullptr;
+    static const bool enabled = EmulatorSettings.IsTraceGammaFormatsEnabled();
     return enabled;
 }
 
@@ -802,9 +803,12 @@ ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc) {
                   (image.srgb_encoded ? 1u : 0u) ^ (clamped ? 2u : 0u),
               [&] {
                   LOG_INFO(Render_Vulkan,
-                           "divaps4 trace sample: guest={} image={} srgb_encoded={} clamped={}",
+                           "divaps4 trace sample: guest={} image={} srgb_encoded={} clamped={} "
+                           "size={}x{} addr={:#x}",
                            vk::to_string(desc.view_info.format),
-                           vk::to_string(image.info.pixel_format), image.srgb_encoded, clamped);
+                           vk::to_string(image.info.pixel_format), image.srgb_encoded, clamped,
+                           image.info.size.width, image.info.size.height,
+                           image.info.guest_address);
               });
     return image.FindView(view_info);
 }
@@ -844,9 +848,12 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
     TraceOnce((u64(desc.info.pixel_format) << 16) ^ u64(desc.info.num_bits),
               [&] {
                   LOG_INFO(Render_Vulkan,
-                           "divaps4 trace target: format={} bits={} srgb_encoded={} tiled={}",
+                           "divaps4 trace target: format={} bits={} srgb_encoded={} tiled={} "
+                           "size={}x{} addr={:#x}",
                            vk::to_string(desc.info.pixel_format), desc.info.num_bits,
-                           image.srgb_encoded, bool(image.info.props.is_tiled));
+                           image.srgb_encoded, bool(image.info.props.is_tiled),
+                           image.info.size.width, image.info.size.height,
+                           image.info.guest_address);
               });
     if (readback_linear_images && (!image.info.props.is_tiled || image.info.size.width <= 8)) {
         std::unique_lock lk{download_images_mutex};

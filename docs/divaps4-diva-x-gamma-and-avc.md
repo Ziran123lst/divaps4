@@ -193,7 +193,8 @@ return image.FindView(view_info);
 2. **亮度**：先确认 `readbackLinearImages = true` 时主标题、菜单和 PV 亮度正常；若 `false` 仍暗，
    在 `[GPU]` 设置中保持开启，等待按需回读修复通过实测。
 3. **回归**：回读现在只在 guest-visible fence 处处理，不再在每次 PM4 提交时处理；通过
-   `DIVAPS4_TRACE_GAMMA=1` 可在日志查看格式钳制是否命中及每批回读图像数、字节量和耗时。
+   `[GPU] traceGammaFormats = true` 可在 `log/shad_log.txt` 查看格式钳制是否命中，以及每批回读的
+   图像数、字节量和耗时。
 4. **AVC**：播放含 PV 的曲目，重点验证有分辨率切换或 10bit 的流；日志里若出现
    `CopyNV12Data: frame ... needs ... but the frame buffer only has ...`，说明流确实超出了
    guest 声明的缓冲，应改为在 `sceVdecCoreQueryFrameBufferInfo` 侧按实际分辨率上报。
