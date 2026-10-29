@@ -13,10 +13,12 @@ on:
     paths-ignore:
       - "documents/**"
       - "**/*.md"
+      - ".github/workflows/build.yml"
   pull_request:
     paths-ignore:
       - "documents/**"
       - "**/*.md"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
 
 concurrency:
@@ -62,25 +64,17 @@ jobs:
         archives: qtbase qttools
         modules: qtmultimedia
 
-    - name: Cache CMake Configuration
-      uses: actions/cache@v5
-      env:
-          cache-name: ${{ runner.os }}-qt-ninja-cache-cmake-configuration
-      with:
-          path: |
-            ${{github.workspace}}/build
-            ${{github.workspace}}/qtlauncher/build
-          key: ${{ env.cache-name }}-${{ hashFiles('**/CMakeLists.txt', 'cmake/**') }}
-          restore-keys: |
-            ${{ env.cache-name }}-
-
     - name: Cache CMake Build
       uses: hendrikmuhs/ccache-action@v1.2.21
       env:
           cache-name: ${{ runner.os }}-qt-cache-cmake-build
       with:
+        # GitHub caches are immutable. Use a unique key per run, restoring the most recent
+        # compatible cache so newly compiled objects (including changed source files) are saved.
         append-timestamp: false
-        key: ${{ env.cache-name }}-${{ hashFiles('**/CMakeLists.txt', 'cmake/**') }}
+        key: ${{ env.cache-name }}-${{ hashFiles('**/CMakeLists.txt', 'cmake/**') }}-${{ github.run_id }}
+        restore-keys: |
+          ${{ env.cache-name }}-${{ hashFiles('**/CMakeLists.txt', 'cmake/**') }}
 
     - name: Configure divaps4
       # LTO is deliberately off. It roughly doubles the wall clock time of this job and buys a few
