@@ -823,8 +823,11 @@ void PatchImageSampleArgs(IR::Inst& inst, Info& info, const ImageResource& image
     }();
 
     auto converted = ApplyReadNumberConversionVec4(ir, texel, image.GetNumberConversion());
-    if (sampler.force_degamma && image.GetNumberFmt() != AmdGpu::NumberFormat::Srgb) {
-        converted = ApplyForceDegamma(ir, texel);
+    // The decode has to happen on the already converted value, otherwise the conversion result is
+    // silently discarded. Integer and depth samples carry no gamma semantics and must be skipped.
+    if (sampler.force_degamma && image.GetNumberFmt() != AmdGpu::NumberFormat::Srgb &&
+        !AmdGpu::IsInteger(image.GetNumberFmt()) && !inst_info.is_depth) {
+        converted = ApplyForceDegamma(ir, converted);
     }
     inst.ReplaceUsesWith(converted);
 }
