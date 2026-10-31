@@ -487,7 +487,16 @@ bool EmulatorSettingsImpl::Load(const std::string& serial) {
             return true;
         }
     } catch (const std::exception& e) {
-        UNREACHABLE_MSG("Error loading settings: {}", e.what());
+        // A malformed config file is a user typo, not an emulator bug. UNREACHABLE_MSG here tripped
+        // an assertion and took the process down, so a single missing comma in config.json made the
+        // game impossible to start with no way to recover from inside the emulator. Report the exact
+        // parse position, keep the defaults and carry on; the file is left untouched so it can be
+        // corrected by hand.
+        LOG_ERROR(Config,
+                  "Failed to parse config.json: {}. Falling back to default settings; fix or delete "
+                  "{}/config.json to get rid of this message.",
+                  e.what(),
+                  Common::FS::GetUserPath(Common::FS::PathType::UserDir).string());
         return false;
     }
 }
