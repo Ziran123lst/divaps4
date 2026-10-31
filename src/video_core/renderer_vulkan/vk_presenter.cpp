@@ -22,6 +22,7 @@
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/texture_cache/host_compatibility.h"
 #include "video_core/texture_cache/image.h"
 
 #include <algorithm>
@@ -38,9 +39,11 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <sstream>
 #include <system_error>
+#include <unordered_set>
 #include <vector>
 #include <imgui.h>
 #include <stb_image_write.h>
@@ -703,6 +706,38 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     view_info.mapping.a = AmdGpu::CompSwizzle::One;
 
     auto& image = texture_cache.GetImage(image_id);
+
+    // The display buffer is written by the guest's color buffer, but presented through a view whose
+    // format is derived from the videoout attribute alone. Those two can disagree about gamma:
+    // Vulkan lets an sRGB format alias its linear counterpart, so presenting linearly written
+    // contents through an sRGB view decodes the entire frame once. That crushes shadows, barely
+    // touches highlights and cannot be undone by an output gamma curve. Present with the encoding
+    // the contents actually have, the same clamp TextureCache::FindTexture applies to samples.
+    const vk::Format requested_format = view_info.format;
+    const bool requested_srgb = VideoCore::IsSrgbFormat(requested_format);
+    const bool clamped = requested_srgb && !image.srgb_encoded;
+    if (clamped) {
+        view_info.format = VideoCore::ToggleSrgb(requested_format, false);
+    }
+    if (EmulatorSettings.IsTraceGammaFormats() && requested_srgb != image.srgb_encoded) {
+        static std::mutex trace_mutex;
+        static std::unordered_set<u64> seen;
+        const u64 key = (u64(requested_format) << 8) ^ (image.srgb_encoded ? 1u : 0u);
+        bool first = false;
+        {
+            std::scoped_lock lock{trace_mutex};
+            first = seen.insert(key).second;
+        }
+        if (first) {
+            LOG_INFO(Render_Vulkan,
+                     "divaps4 trace present: videoout={} image={} srgb_encoded={} clamped={} "
+                     "size={}x{} addr={:#x}",
+                     vk::to_string(requested_format), vk::to_string(image.info.pixel_format),
+                     image.srgb_encoded, clamped, image.info.size.width, image.info.size.height,
+                     image.info.guest_address);
+        }
+    }
+
     auto image_view = *image.FindView(view_info).image_view;
     const vk::Extent2D image_size = {image.info.size.width, image.info.size.height};
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
